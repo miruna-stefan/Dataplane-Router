@@ -1,0 +1,121 @@
+STEFAN MIRUNA ANDREEA 324CA
+
+HOMEWORK1 - DATAPLANE ROUTER
+
+Note:
+1) I have implemented all tasks of the homework.
+
+2) In order to solve the homework, I took inspiration from the solution of the
+4th lab.
+
+Implementation explained:
+After parsing the rtable using the already defined function, i have created a
+trie and populated it with all the entries of the route table, as suggested in
+the homework statement. This data structure will come in handy when performing
+search operations in the rtable. Each node basically corresponds to a bit in 
+the rtentry, which will be efficient because the common "prefixes" will be 
+stored only once (not multiple times, for each time when they appear in an 
+entry) and the search operations will be facilitated. When inserting a rtentry 
+in the trie, we basically parse it bit by bit and go deeper in the trie 
+gradually: if the current bit is 0 we advance on the left neighbour of the 
+current node; if it is 1, we advance on the right neighbour of the current 
+node; and if we have reached the end of the mask, we mark the current node as 
+"end_of_mask" and store the rtentry here. The same logic goes for the search 
+operation: we parse the ip destination address bit by bit and advance in the 
+left or right subtree. If we have nowhere to go anymore, we return the last 
+best_entry that we have found. We update the best_entry when we reach a node 
+that was marked with "end_of _mask". This way, we identify the most specific 
+rtentry that matches the ip destination. After creating and populating the 
+trie, we also allocate memory for the ARP cache and create the queue that will
+contain the packets whose MAC destination could not be found in the ARP cache
+and, hence, they are waiting for an ARP reply.
+
+For each packet that we handle, the first thing to do is to verify if it is an 
+IP or an ARP packet. These are the only types that we take into consideration.
+Any different kind of packet will be just ignored. Then, the function 
+"handle_packet_according_to_ethertype" is called, which further calls a more 
+specified function according to the type of the packet ("handle_IP_packet" for
+IP type or "handle_ARP_packet" for ARP type).
+
+For the IP packets:
+First things first, we need to check if the router itself is the destination of
+the packet, meaning that the packet is an "Echo request" packet. In this case, 
+we need to send an ICMP "Echo reply" response (this will be done by the 
+"send_ICMP_response" function, called with the ICMP_ECHO_REQUEST flag, that 
+refers to the reason why we are sending an icmp reply). Otherwise, the router 
+must redirect the packet to the next hop. This will be done by the 
+"IP_packet_redirection" function.
+
+In this function, multiple checks are performed before actually sending the 
+packet, with the help of some dedicated functions:
+
+	1. verify that the expected checksum corresponds to the actual 
+	checksum. If they are not equal, it means that the packet is corrupt =>
+	the dedicated boolean function returns false and the packet is thrown 
+	away.
+	
+	2. check / update TTL: if the ttl is still valid, we need to decrement
+	its value and also to recalculate the checksum (because we have just 
+	modified the ttl). If the ttl has expired, we need to send an ICMP 
+	response and return false in the dedicated function so that the 
+	"IP_packet_redirection" function is notified to drop this packet.
+	
+	3. look for the best route in the trie. If no route could be found 
+	to match the IP destination address, an ICMP response is sent, the 
+	dedicated function returns false and the packet is dropped. Otherwise, 
+	we need to move on to the next step, namely finding out the MAC 
+	destination address. This is done by the 
+	"could_update_MAC_in_ethernet_header" function, that looks for the MAC
+	(corresponding to the IP destination of the packet) in the ARP cahce.
+	If we are fortunate to find it, then we just need to put this MAC 
+	address in the ethernet header and the packet is ready to be sent. 
+	However, if we cannot find the MAC destination in the ARP  cache, we 
+	have to enque this packet (alongside with some other relevant infos 
+	about it) in a queue that will store all the packets that are waiting 
+	for their MAC address destination to be found. Then, an ARP request 
+	packet will be sent broadcast, in order for the host that identifies 
+	itself with that address to responde with an ARP reply packet. This 
+	packet will also contain the MAC address, a new entry with this address
+	will be added in the ARP cache and the packet from the queue that was 
+	waiting for this ARP will be dequeued and sent.
+	
+	"create_ARP_request_packet" is a helper function that allocates memory
+	for the ARP request packet and initializes its fields. The eth_header 
+	and the arp_header are created by other helper functions, copied to the
+	ARP packet and then freed after we do not need them anymore. The 
+	ethernet header must have the MAC destination set to broadcast because 
+	it is an arp request, which means that it should be sent to everybody, 
+	the MAC source will be the MAC of the interface of the router and the 
+	ether_type must indicate that this is an arp packet. The same goes for
+	the arp header: the mac sender will be set to the mac of the interface,
+	the sender ip will be set to the ip of the interface and the the target
+	IP address will be set to the next hop IP. In addition to this, the op
+	field will be set to 1, indicating that this is an arp request.
+	
+For ARP packets:
+After identifying the type of the arp packet (if it is an ARP reply or an ARP
+request) based on the op field of the arp header, we need to call the specific
+function accordingly. 
+
+If it is an ARP reply, we need to add its MAC source address in the ARP cache.
+The function that performs this task also checks if the ARP cache has reached 
+its maximum capacity and in this case we need to realloc memory. After that, 
+we take each packet from the queue and check if its IP destination address has
+appeared in the ARP cache. If so, it means that we have found its MAC 
+destination (beacuse the IP and the MAC are paired in the ARP cache) and, 
+therefore, we need to send the packet. Otherwise, we put it back in the queue.
+
+If it is an ARP request, we need to "transform" the packet into an ARP reply by
+swapping all the source and destination addresses (not only the source and 
+destination from the ethernet header, but also from the arp header - this is 
+done by the "update_all_addresses_ARP_reply" function), changing the op into 2
+(indicating that this is an arp reply) and sending the packet backwards.
+
+This implementation is quite similar to the "send_ICMP_response" function, that
+also swaps the source and the destination addresses (from both the ethernet and
+the ip headers), updates the ip protocol into the ICMP protocol, updates the 
+length of the ip header, calls a helper function that creates the icmp header 
+according to the flag (the reason why we are sending this icmp response), adds 
+the icmp header to the packet, alongside with the first 8 bytes of the original
+payload and sends the packet.
+
